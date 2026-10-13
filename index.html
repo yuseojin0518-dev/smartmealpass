@@ -36,10 +36,11 @@
       const auth = getAuth(app);
       const db = getFirestore(app);
 
-      // 전역 변수 할당
+      // 전역 변수 할당 (signInAnonymously 누락 버그 수정 및 준비 상태 플래그 추가)
       window.db = db;
       window.auth = auth;
-      window.firebaseModules = { collection, onSnapshot, addDoc, deleteDoc, doc, updateDoc };
+      window.firebaseModules = { collection, onSnapshot, addDoc, deleteDoc, doc, updateDoc, signInAnonymously };
+      window.isFirebaseReady = true;
 
       window.dispatchEvent(new Event('firebase-ready'));
     </script>
@@ -79,22 +80,32 @@
         setTimeout(() => { toast.classList.replace('opacity-100', 'opacity-0'); }, 3000);
       }
 
-      window.addEventListener('firebase-ready', async () => {
+      async function connectDatabase() {
         const { auth, db, firebaseModules } = window;
-        const { collection, onSnapshot } = firebaseModules;
+        if (!db || !firebaseModules) return;
+        const { collection, onSnapshot, signInAnonymously } = firebaseModules;
 
-        try { await window.auth.signInAnonymously(auth); } catch (e) { console.error("Auth error", e); }
+        // 로딩 화면에서 멈추지 않도록 먼저 로그인 화면을 즉시 표시
+        if (!currentUser) renderLogin();
+
+        // 익명 로그인 시도 (켜져 있지 않아도 작동하도록 안전 처리)
+        try {
+          await signInAnonymously(auth);
+        } catch (e) {
+          console.warn("익명 로그인 건너뜀 (테스트 모드 사용):", e.message);
+        }
 
         const usersRef = collection(db, 'meal_users');
         unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
           allUsers = snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
           if (currentUser) {
             const updatedUser = allUsers.find(u => u.id === currentUser.id);
-            if(updatedUser) currentUser = updatedUser; 
+            if (updatedUser) currentUser = updatedUser;
             renderApp();
-          } else {
-            renderLogin();
           }
+        }, (error) => {
+          console.error("Firestore Users Error:", error);
+          showToast('데이터베이스 권한 오류: 파이어베이스 [규칙]을 확인해주세요.', 'error');
         });
 
         const todayStr = getTodayStr();
@@ -102,8 +113,16 @@
         unsubscribeAttendance = onSnapshot(attRef, (snapshot) => {
           todayAttendance = snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
           if (currentUser) renderApp();
+        }, (error) => {
+          console.error("Firestore Attendance Error:", error);
         });
-      });
+      }
+
+      if (window.isFirebaseReady) {
+        connectDatabase();
+      } else {
+        window.addEventListener('firebase-ready', connectDatabase);
+      }
 
       function renderLogin() {
         const appEl = document.getElementById('app');
@@ -501,7 +520,6 @@
       }
 
       window.deleteStudent = async function(docId) {
-        if (!confirm('정말 이 학생을 삭제하시겠습니까? (복구 불가)')) return;
         try {
           const { db, firebaseModules } = window;
           const { doc, deleteDoc } = firebaseModules;
